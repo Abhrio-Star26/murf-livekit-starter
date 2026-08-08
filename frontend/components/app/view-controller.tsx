@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
@@ -23,8 +24,8 @@ const VIEW_MOTION_PROPS = {
   animate: 'visible',
   exit: 'hidden',
   transition: {
-    duration: 0.5,
-    ease: 'linear',
+    duration: 0.4,
+    ease: 'easeInOut',
   },
 };
 
@@ -33,21 +34,31 @@ interface ViewControllerProps {
 }
 
 export function ViewController({ appConfig }: ViewControllerProps) {
-  const { isConnected, start } = useSessionContext();
+  const { isConnected, isConnecting, start } = useSessionContext();
   const { resolvedTheme } = useTheme();
+  const [hasHadCall, setHasHadCall] = useState(false);
+
+  useEffect(() => {
+    if (isConnected) {
+      setHasHadCall(true);
+    }
+  }, [isConnected]);
 
   return (
     <AnimatePresence mode="wait">
-      {/* Welcome view */}
+      {/* Welcome / Ready / Connecting / Call Ended View */}
       {!isConnected && (
         <MotionWelcomeView
           key="welcome"
           {...VIEW_MOTION_PROPS}
           startButtonText={appConfig.startButtonText}
           onStartCall={start}
+          isConnecting={isConnecting}
+          hasCallEnded={hasHadCall && !isConnected && !isConnecting}
         />
       )}
-      {/* Session view */}
+
+      {/* Active Session View (Listening / Speaking) */}
       {isConnected && (
         <MotionSessionView
           key="session-view"

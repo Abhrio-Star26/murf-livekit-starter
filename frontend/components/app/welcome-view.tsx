@@ -1,65 +1,150 @@
-import { Button } from '@/components/ui/button';
+'use client';
 
-function WelcomeImage() {
-  return (
-    <svg
-      width="64"
-      height="64"
-      viewBox="0 0 64 64"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className="text-fg0 mb-4 size-16"
-    >
-      <path
-        d="M15 24V40C15 40.7957 14.6839 41.5587 14.1213 42.1213C13.5587 42.6839 12.7956 43 12 43C11.2044 43 10.4413 42.6839 9.87868 42.1213C9.31607 41.5587 9 40.7957 9 40V24C9 23.2044 9.31607 22.4413 9.87868 21.8787C10.4413 21.3161 11.2044 21 12 21C12.7956 21 13.5587 21.3161 14.1213 21.8787C14.6839 22.4413 15 23.2044 15 24ZM22 5C21.2044 5 20.4413 5.31607 19.8787 5.87868C19.3161 6.44129 19 7.20435 19 8V56C19 56.7957 19.3161 57.5587 19.8787 58.1213C20.4413 58.6839 21.2044 59 22 59C22.7956 59 23.5587 58.6839 24.1213 58.1213C24.6839 57.5587 25 56.7957 25 56V8C25 7.20435 24.6839 6.44129 24.1213 5.87868C23.5587 5.31607 22.7956 5 22 5ZM32 13C31.2044 13 30.4413 13.3161 29.8787 13.8787C29.3161 14.4413 29 15.2044 29 16V48C29 48.7957 29.3161 49.5587 29.8787 50.1213C30.4413 50.6839 31.2044 51 32 51C32.7956 51 33.5587 50.6839 34.1213 50.1213C34.6839 49.5587 35 48.7957 35 48V16C35 15.2044 34.6839 14.4413 34.1213 13.8787C33.5587 13.3161 32.7956 13 32 13ZM42 21C41.2043 21 40.4413 21.3161 39.8787 21.8787C39.3161 22.4413 39 23.2044 39 24V40C39 40.7957 39.3161 41.5587 39.8787 42.1213C40.4413 42.6839 41.2043 43 42 43C42.7957 43 43.5587 42.6839 44.1213 42.1213C44.6839 41.5587 45 40.7957 45 40V24C45 23.2044 44.6839 22.4413 44.1213 21.8787C43.5587 21.3161 42.7957 21 42 21ZM52 17C51.2043 17 50.4413 17.3161 49.8787 17.8787C49.3161 18.4413 49 19.2044 49 20V44C49 44.7957 49.3161 45.5587 49.8787 46.1213C50.4413 46.6839 51.2043 47 52 47C52.7957 47 53.5587 46.6839 54.1213 46.1213C54.6839 45.5587 55 44.7957 55 44V20C55 19.2044 54.6839 18.4413 54.1213 17.8787C53.5587 17.3161 52.7957 17 52 17Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { SakhiAvatar, SakhiState } from '@/components/agents-ui/sakhi-avatar';
+import { JanaHeader } from '@/components/agents-ui/jana-header';
+import { TrustDisclaimerFooter } from '@/components/agents-ui/trust-disclaimer-footer';
+import { MicPermissionModal } from '@/components/agents-ui/mic-permission-modal';
+import { useLanguage } from '@/components/app/language-context';
+import { Microphone, PhoneCall, ArrowRight, ShieldCheck, Sparkle } from '@phosphor-icons/react';
+import { cn } from '@/lib/shadcn/utils';
 
 interface WelcomeViewProps {
   startButtonText: string;
   onStartCall: () => void;
+  onMicPermissionError?: (err: Error) => void;
+  isConnecting?: boolean;
+  hasCallEnded?: boolean;
 }
 
 export const WelcomeView = ({
-  startButtonText,
   onStartCall,
+  onMicPermissionError,
+  isConnecting = false,
+  hasCallEnded = false,
   ref,
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
+  const { t } = useLanguage();
+  const [showMicError, setShowMicError] = useState(false);
+
+  const currentState: SakhiState = isConnecting
+    ? 'connecting'
+    : hasCallEnded
+    ? 'ended'
+    : 'ready';
+
+  const backgroundTints = {
+    ready:       'bg-slate-950',
+    connecting:  'bg-gradient-to-b from-amber-950/30 via-slate-950 to-slate-950',
+    listening:   'bg-gradient-to-b from-emerald-950/40 via-slate-950 to-slate-950',
+    speaking:    'bg-gradient-to-b from-sky-950/40 via-slate-950 to-slate-950',
+    ended:       'bg-gradient-to-b from-slate-900 via-slate-950 to-slate-950',
+  };
+
+  const handleStartCallClick = async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      onStartCall();
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error('Microphone permission blocked');
+      setShowMicError(true);
+      onMicPermissionError?.(error);
+    }
+  };
+
   return (
-    <div ref={ref}>
-      <section className="bg-background flex flex-col items-center justify-center text-center">
-        <WelcomeImage />
+    <div
+      ref={ref}
+      className={cn(
+        'min-h-svh w-full flex flex-col justify-between text-slate-100 font-sans transition-colors duration-500',
+        backgroundTints[currentState]
+      )}
+    >
+      <JanaHeader />
 
-        <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          Chat live with your voice AI agent
-        </p>
+      <main className="flex-1 flex flex-col items-center justify-center px-4 py-6 text-center space-y-6 max-w-xl mx-auto w-full">
+        <SakhiAvatar state={currentState} size="lg" />
 
-        <Button
-          size="lg"
-          onClick={onStartCall}
-          className="mt-6 w-64 rounded-full font-mono text-xs font-bold tracking-wider uppercase"
-        >
-          {startButtonText}
-        </Button>
-      </section>
+        {/* State Banner */}
+        <div className="space-y-2 max-w-prose">
+          <h2 className="text-xl md:text-2xl font-bold text-slate-100">
+            {currentState === 'ready'      && t.readyTitle}
+            {currentState === 'connecting' && t.connectingTitle}
+            {currentState === 'ended'      && t.endedTitle}
+          </h2>
+          <p className="text-xs md:text-sm text-teal-300/90 leading-relaxed font-medium">
+            {currentState === 'ready'      && t.readyDesc}
+            {currentState === 'connecting' && t.connectingDesc}
+            {currentState === 'ended'      && t.endedDesc}
+          </p>
+        </div>
 
-      <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">
-        <p className="text-muted-foreground max-w-prose pt-1 text-xs leading-5 font-normal text-pretty md:text-sm">
-          Need help getting set up? Check out the{' '}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://docs.livekit.io/agents/start/voice-ai/"
-            className="underline"
-          >
-            Voice AI quickstart
-          </a>
-          .
-        </p>
-      </div>
+        {/* Primary Action Button */}
+        <div className="pt-2 w-full flex justify-center">
+          {currentState === 'ready' && (
+            <Button
+              size="lg"
+              onClick={handleStartCallClick}
+              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 via-emerald-600 to-amber-600 hover:from-teal-500 hover:to-amber-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl shadow-teal-950/80 transition-all hover:scale-105 flex items-center justify-center gap-3 border border-amber-300/40"
+            >
+              <Microphone className="w-5 h-5 text-amber-200 animate-pulse" />
+              <span>{t.startCallBtn}</span>
+              <ArrowRight className="w-5 h-5" />
+            </Button>
+          )}
+
+          {currentState === 'connecting' && (
+            <Button
+              size="lg"
+              disabled
+              className="w-full max-w-sm h-14 rounded-full bg-amber-600/70 text-white font-semibold text-sm cursor-not-allowed flex items-center justify-center gap-3 border border-amber-400/50 shadow-lg shadow-amber-950/60"
+            >
+              <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+              <span>{t.connectingBtn}</span>
+            </Button>
+          )}
+
+          {currentState === 'ended' && (
+            <Button
+              size="lg"
+              onClick={handleStartCallClick}
+              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl transition-all hover:scale-105 flex items-center justify-center gap-3 border border-teal-400/40"
+            >
+              <PhoneCall className="w-5 h-5 text-emerald-300" />
+              <span>{t.endedBtn}</span>
+            </Button>
+          )}
+        </div>
+
+        {/* Topic Cards */}
+        <div className="pt-4 grid grid-cols-2 gap-2 text-[11px] text-slate-300 max-w-md w-full">
+          <div className="p-3 rounded-xl bg-slate-900/80 border border-teal-800/40 text-center space-y-0.5">
+            <span className="text-amber-400 font-semibold flex items-center justify-center gap-1">
+              <Sparkle className="w-3.5 h-3.5" />
+              {t.topicsTitle1}
+            </span>
+            <span>{t.topicsDesc1}</span>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-900/80 border border-teal-800/40 text-center space-y-0.5">
+            <span className="text-amber-400 font-semibold flex items-center justify-center gap-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              {t.topicsTitle2}
+            </span>
+            <span>{t.topicsDesc2}</span>
+          </div>
+        </div>
+      </main>
+
+      <TrustDisclaimerFooter />
+
+      <MicPermissionModal
+        isOpen={showMicError}
+        onClose={() => setShowMicError(false)}
+        onRetry={handleStartCallClick}
+      />
     </div>
   );
 };

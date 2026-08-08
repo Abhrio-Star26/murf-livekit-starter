@@ -33,36 +33,25 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'Murf AI',
-  pageTitle: 'Voice Agent Starter',
-  pageDescription: 'A voice agent powered by Murf Falcon — the fastest TTS API',
+  companyName: 'Jana Sakhyam (जनः सख्यम्)',
+  pageTitle: 'Jana Sakhyam (जनः सख्यम्) — Financial Literacy Voice Agent',
+  pageDescription: 'Your warm, trustworthy voice guide for Indian financial schemes, banking literacy, and fraud protection',
 
   supportsChatInput: true,
-  supportsVideoInput: true,
-  supportsScreenShare: true,
+  supportsVideoInput: false,
+  supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
   logo: '/murf-logo.svg',
-  accent: '#6366F1',
+  accent: '#0d9488',
   logoDark: '/murf-logo-dark.svg',
-  accentDark: '#818cf8',
-  startButtonText: 'Start talking',
+  accentDark: '#14b8a6',
+  startButtonText: 'Start Conversation / बातचीत शुरू करें',
 
-  // optional: audio visualization configuration
-  // audioVisualizerType: 'bar',
-  // audioVisualizerColor: '#002cf2',
-  // audioVisualizerColorDark: '#1fd5f9',
-  // audioVisualizerColorShift: 0.3,
-  // audioVisualizerBarCount: 5,
-  // audioVisualizerType: 'radial',
-  // audioVisualizerRadialBarCount: 24,
-  // audioVisualizerRadialRadius: 100,
-  // audioVisualizerType: 'grid',
-  // audioVisualizerGridRowCount: 25,
-  // audioVisualizerGridColumnCount: 25,
-  // audioVisualizerType: 'wave',
-  // audioVisualizerWaveLineWidth: 3,
-  // audioVisualizerType: 'aura',
+  audioVisualizerType: 'wave',
+  audioVisualizerColor: '#0d9488',
+  audioVisualizerColorDark: '#14b8a6',
+  audioVisualizerWaveLineWidth: 3,
 
   // agent dispatch configuration
   agentName: process.env.AGENT_NAME ?? undefined,
