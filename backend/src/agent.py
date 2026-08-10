@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -22,9 +23,11 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 try:
     from db import get_caller, init_db, save_caller
     from Prompt import SYSTEM_PROMPT
+    from schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
 except ImportError:
     from .db import get_caller, init_db, save_caller
     from .Prompt import SYSTEM_PROMPT
+    from .schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
 
 
 logger = logging.getLogger("agent")
@@ -33,7 +36,7 @@ load_dotenv(".env.local")
 
 
 class Assistant(Agent):
-    """Voice AI agent for Cyber Suraksha Kendra with caller database tools."""
+    """Voice AI agent for Cyber Suraksha Kendra with caller database tools and financial scheme eligibility checking."""
 
     def __init__(self) -> None:
         init_db()
@@ -90,6 +93,85 @@ class Assistant(Agent):
             "message": f"Caller info for {name} saved successfully.",
             "record": saved_record,
         })
+
+    @function_tool
+    async def check_scheme_eligibility(
+        self,
+        ctx: RunContext,
+        scheme_id: str,
+        age: Optional[int] = None,
+        annual_income: Optional[float] = None,
+        occupation: Optional[str] = None,
+        land_holding_hectares: Optional[float] = None,
+        is_taxpayer: Optional[bool] = None,
+        girl_child_age: Optional[int] = None,
+    ) -> str:
+        """Check user eligibility for Indian government financial schemes (PM-KISAN, PM MUDRA, Atal Pension, Sukanya Samriddhi, Ayushman Bharat) and retrieve the official document checklist.
+
+        CALL THIS TOOL WHEN:
+        1. The user asks if they or a family member qualify for a financial scheme (e.g., "क्या मैं PM Kisan के लिए eligible हूँ?", "PM Mudra loan कैसे मिलेगा?").
+        2. The user provides details like age, income, occupation, land ownership, or daughter's age to check scheme eligibility.
+        3. The user requests a document checklist or required papers to apply for a scheme.
+
+        DO NOT CALL THIS TOOL FOR:
+        - General bank transfers, UPI PIN queries, or fraud helpline questions.
+
+        Args:
+            scheme_id: Scheme ID code. Must be one of: 'pm_kisan', 'pm_mudra', 'atal_pension', 'sukanya_samriddhi', 'ayushman_bharat'.
+            age: Age of the applicant in years (optional).
+            annual_income: Total family annual income in INR (optional).
+            occupation: Current job/occupation (e.g. 'farmer', 'shopkeeper', 'daily_wager', 'unorganized_worker') (optional).
+            land_holding_hectares: Cultivable land ownership in hectares for farmer schemes (optional).
+            is_taxpayer: Whether the applicant pays income tax (optional).
+            girl_child_age: Age of girl child for Sukanya Samriddhi Yojana (optional).
+        """
+        try:
+            result = evaluate_scheme_eligibility(
+                scheme_id=scheme_id,
+                age=age,
+                annual_income=annual_income,
+                occupation=occupation,
+                land_holding_hectares=land_holding_hectares,
+                is_taxpayer=is_taxpayer,
+                girl_child_age=girl_child_age,
+            )
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error evaluating scheme eligibility for {scheme_id}: {e}")
+            # Failure path out loud handling
+            return json.dumps({
+                "status": "error",
+                "error_type": "internal_error",
+                "data_as_of": "August 2026",
+                "spoken_failure_message": f"माफ़ कीजिए, अभी स्कीम डेटाबेस से कनेक्ट करने में दिक्कत आ रही है। कृपया कुछ देर बाद फिर से पूछें।",
+                "message": str(e),
+            }, ensure_ascii=False)
+
+    @function_tool
+    async def get_scheme_document_checklist(
+        self,
+        ctx: RunContext,
+        scheme_id: str,
+    ) -> str:
+        """Get the required document checklist for a specific financial scheme (PM-KISAN, PM MUDRA, Atal Pension, Sukanya Samriddhi, Ayushman Bharat).
+
+        CALL THIS TOOL WHEN:
+        - The user asks specifically about what documents, proofs, or papers are needed to apply for a scheme.
+
+        Args:
+            scheme_id: Scheme ID code ('pm_kisan', 'pm_mudra', 'atal_pension', 'sukanya_samriddhi', 'ayushman_bharat').
+        """
+        try:
+            result = get_document_checklist(scheme_id=scheme_id)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error fetching document checklist for {scheme_id}: {e}")
+            return json.dumps({
+                "status": "error",
+                "data_as_of": "August 2026",
+                "spoken_failure_message": f"माफ़ कीजिए, {scheme_id} के डॉक्यूमेंट लिस्ट सर्वर से नहीं मिल पाए हैं।",
+                "message": str(e),
+            }, ensure_ascii=False)
 
 
 server = AgentServer()
