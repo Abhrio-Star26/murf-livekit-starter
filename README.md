@@ -16,6 +16,17 @@ Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on th
 
 ---
 
+## Financial Services Track: Scheme Eligibility & Document Checklist
+
+The voice agent is equipped with a domain-specific real-data function tool for **Financial Services**:
+
+- **Real Domain Dataset (`schemes_data.json`)**: Curated government financial scheme rules and criteria (PM-KISAN, PM MUDRA Yojana, Atal Pension Yojana, Sukanya Samriddhi Yojana, Ayushman Bharat).
+- **Precise Tool Triggering (Step 3)**: `@function_tool async def check_scheme_eligibility` and `get_scheme_document_checklist` docstrings guide the LLM to call the tool when callers ask about scheme eligibility, income/age limits, or required application documents.
+- **Out-Loud Failure Handling (Step 4)**: On lookup errors, invalid scheme parameters, or missing datasets, the tools return a structured `spoken_failure_message` so the agent speaks a clear, helpful status update rather than hallucinating or remaining silent.
+- **Data Recency Metadata (Step 5)**: All responses return `"data_as_of": "August 2026"` and official source references. The agent explicitly states data currency in spoken turns ("यह मानदंड अगस्त 2026 के अनुसार हैं").
+
+---
+
 ## Architecture
 
 ```mermaid

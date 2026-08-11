@@ -21,12 +21,14 @@ from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 try:
-    from db import get_caller, init_db, save_caller
-    from Prompt import SYSTEM_PROMPT
+    from db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
+    from Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
+    from outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
     from schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
 except ImportError:
-    from .db import get_caller, init_db, save_caller
-    from .Prompt import SYSTEM_PROMPT
+    from .db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
+    from .Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
+    from .outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
     from .schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
 
 
@@ -174,6 +176,37 @@ class Assistant(Agent):
             }, ensure_ascii=False)
 
 
+    @function_tool
+    async def mark_deadline_alert_sent(
+        self,
+        ctx: RunContext,
+        user_id: str,
+        scheme_id: str,
+    ) -> str:
+        """Mark in the database that the outbound deadline alert was successfully delivered for this caller and scheme.
+
+        ALWAYS CALL THIS at the end of an outbound deadline-alert call before hanging up.
+
+        Args:
+            user_id: The unique user ID of the caller who received the alert.
+            scheme_id: The scheme ID for which the deadline alert was delivered (e.g. 'pm_kisan').
+        """
+        try:
+            updated = mark_deadline_alert_dispatched(user_id=user_id, scheme_id=scheme_id)
+            if updated:
+                return json.dumps({
+                    "status": "success",
+                    "message": f"Deadline alert marked as delivered for user_id={user_id}, scheme={scheme_id}.",
+                })
+            return json.dumps({
+                "status": "not_found",
+                "message": f"No pending deadline alert found for user_id={user_id}. Record may not exist or was already dispatched.",
+            })
+        except Exception as e:
+            logger.error(f"Error marking deadline alert dispatched for {user_id}: {e}")
+            return json.dumps({"status": "error", "message": str(e)})
+
+
 server = AgentServer()
 
 
@@ -191,6 +224,50 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    # -------------------------------------------------------------------------
+    # Outbound Call Detection
+    # If this job was dispatched by outbound_call.py, it will carry a JSON
+    # metadata payload. We detect the call type and switch the system prompt
+    # and first-turn greeting to the outbound deadline-alert variant.
+    # -------------------------------------------------------------------------
+    call_metadata: dict = {}
+    is_outbound_deadline_alert = False
+
+    if ctx.job.metadata:
+        try:
+            call_metadata = json.loads(ctx.job.metadata)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Could not parse job metadata as JSON: %s", ctx.job.metadata)
+
+    if call_metadata.get("call_type") == "outbound_deadline_alert":
+        is_outbound_deadline_alert = True
+        caller_name = call_metadata.get("caller_name", "")
+        scheme_name = call_metadata.get("scheme_name", "")
+        deadline = call_metadata.get("deadline", "")
+        outbound_user_id = call_metadata.get("user_id", "")
+
+        agent_instructions = OUTBOUND_SYSTEM_PROMPT.format(
+            caller_name=caller_name,
+            scheme_name=scheme_name,
+            deadline=deadline,
+        )
+        first_greeting = OUTBOUND_FIRST_TURN_GREETING.format(
+            caller_name=caller_name,
+            scheme_name=scheme_name,
+            deadline=deadline,
+        )
+        logger.info(
+            "📞 OUTBOUND DEADLINE ALERT call | user=%s | scheme=%s | deadline=%s",
+            outbound_user_id,
+            scheme_name,
+            deadline,
+        )
+    else:
+        # Default: inbound call
+        agent_instructions = SYSTEM_PROMPT
+        first_greeting = FIRST_TURN_GREETING
+        logger.info("📥 INBOUND call | room=%s", ctx.room.name)
+
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -199,7 +276,7 @@ async def my_agent(ctx: JobContext):
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
-            model="gemini-3.5-flash",
+            model="gemini-3.6-flash",
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
@@ -240,8 +317,13 @@ async def my_agent(ctx: JobContext):
             )
 
     # Start the session, which initializes the voice pipeline and warms up the models
+    # For outbound calls the agent_instructions are the outbound deadline-alert prompt;
+    # for inbound calls they are the regular SYSTEM_PROMPT.
+    agent = Assistant()
+    agent._instructions = agent_instructions  # Override with the call-type-specific prompt
+
     await session.start(
-        agent=Assistant(),
+        agent=agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -256,6 +338,11 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+
+    # For outbound calls: speak the first-turn greeting immediately after connecting
+    # (Anjali initiates — she called them, not the other way around)
+    if is_outbound_deadline_alert:
+        await session.say(first_greeting, allow_interruptions=True)
 
 
 if __name__ == "__main__":

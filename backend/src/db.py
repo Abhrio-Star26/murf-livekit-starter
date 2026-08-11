@@ -2,7 +2,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Path to SQLite database file
 DB_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -120,5 +120,101 @@ def save_caller(
             "facts": clean_facts,
             "last_interaction": timestamp
         }
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# Outbound Call Support Functions
+# Added for: Financial Services Track — Scheme Deadline Alert outbound use case
+# =============================================================================
+
+def get_callers_with_deadline_alert(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Retrieve all callers who have a 'scheme_deadline_alert' entry in their facts
+    AND where the alert has NOT yet been dispatched (alert_dispatched != True).
+
+    Used by outbound_call.py to build the list of people to call.
+
+    Returns:
+        List of caller dicts: {user_id, name, language_preference, facts, last_interaction}
+    """
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    results = []
+    try:
+        cur = conn.cursor()
+        # Fetch all callers — filter in Python since facts is stored as JSON text
+        cur.execute(
+            "SELECT user_id, name, language_preference, facts, last_interaction FROM callers"
+        )
+        rows = cur.fetchall()
+        for row in rows:
+            facts = json.loads(row["facts"]) if row["facts"] else {}
+            alert_info = facts.get("scheme_deadline_alert")
+            if not alert_info:
+                continue
+            # Only include callers where the alert has NOT been dispatched yet
+            if alert_info.get("alert_dispatched") is True:
+                continue
+            results.append({
+                "user_id": row["user_id"],
+                "name": row["name"],
+                "language_preference": row["language_preference"],
+                "facts": facts,
+                "last_interaction": row["last_interaction"],
+            })
+        return results
+    finally:
+        conn.close()
+
+
+def mark_deadline_alert_dispatched(
+    user_id: str,
+    scheme_id: str,
+    db_path: Optional[str] = None,
+) -> bool:
+    """
+    Mark a deadline alert as dispatched for a specific caller + scheme.
+    Updates the 'scheme_deadline_alert.alert_dispatched' flag to True
+    and records the dispatch timestamp.
+
+    Called by outbound_call.py after successfully placing a SIP call.
+
+    Args:
+        user_id:   The caller's unique ID.
+        scheme_id: The scheme ID that was alerted about.
+        db_path:   Optional custom DB path (used in tests).
+
+    Returns:
+        True if the record was found and updated, False otherwise.
+    """
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT facts FROM callers WHERE user_id = ?", (user_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+
+        facts = json.loads(row["facts"]) if row["facts"] else {}
+        alert_info = facts.get("scheme_deadline_alert", {})
+
+        # Update if this alert is for the matching scheme (or scheme_id is unset)
+        if alert_info.get("scheme_id") == scheme_id or not alert_info.get("scheme_id"):
+            alert_info["alert_dispatched"] = True
+            alert_info["dispatched_at"] = datetime.now(timezone.utc).isoformat()
+            facts["scheme_deadline_alert"] = alert_info
+
+            with conn:
+                conn.execute(
+                    "UPDATE callers SET facts = ? WHERE user_id = ?",
+                    (json.dumps(facts, ensure_ascii=False), user_id),
+                )
+            return True
+        return False
     finally:
         conn.close()
