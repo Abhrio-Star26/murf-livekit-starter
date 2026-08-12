@@ -42,6 +42,8 @@ from db import (
     init_db,
     mark_deadline_alert_dispatched,
     save_caller,
+    get_escalation_by_id,
+    update_escalation_status,
 )
 
 # ---------------------------------------------------------------------------
@@ -226,6 +228,102 @@ async def place_outbound_call(
 
 
 # ---------------------------------------------------------------------------
+# Resolution Callback: place ONE outbound call to notify escalation resolved
+# ---------------------------------------------------------------------------
+async def place_resolution_callback(
+    *,
+    escalation_id: str,
+    user_id: str,
+    caller_name: str,
+    sip_uri: str,
+    issue_category: str,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Place an outbound call to inform a caller that their escalation has been resolved.
+
+    Args:
+        escalation_id: The escalation ticket ID (e.g. 'A3B9C1D2').
+        user_id:        Caller's unique ID in caller_data.db.
+        caller_name:    Full name of the recipient.
+        sip_uri:        SIP URI or username to dial.
+        issue_category: Short label for the issue type.
+        dry_run:        If True, log all steps but do NOT call LiveKit APIs.
+
+    Returns:
+        dict with keys: room_name, status, error (if any)
+    """
+    sip_call_to = sip_uri
+    if sip_call_to.startswith("sip:"):
+        sip_call_to = sip_call_to.split("sip:")[1].split("@")[0]
+
+    call_uid = str(uuid.uuid4())[:8]
+    room_name = f"resolution-{escalation_id}-{call_uid}"
+
+    metadata = json.dumps(
+        {
+            "call_type": "escalation_resolved",
+            "escalation_id": escalation_id,
+            "caller_name": caller_name,
+            "issue_category": issue_category,
+            "user_id": user_id,
+            "dispatched_at": datetime.now(timezone.utc).isoformat(),
+        },
+        ensure_ascii=False,
+    )
+
+    logger.info(
+        "🔔 Preparing resolution callback | room=%s | to=%s | escalation=%s",
+        room_name, sip_call_to, escalation_id,
+    )
+
+    if dry_run:
+        logger.info("🔵 DRY RUN — Skipping LiveKit API calls for resolution callback.")
+        return {"room_name": room_name, "status": "dry_run", "error": None}
+
+    try:
+        from livekit import api as lk_api  # type: ignore
+
+        lkapi = _get_lk_api()
+
+        logger.info("🤖 Dispatching agent '%s' for resolution callback to room '%s'...", AGENT_NAME, room_name)
+        dispatch = await lkapi.agent_dispatch.create_dispatch(
+            lk_api.CreateAgentDispatchRequest(
+                agent_name=AGENT_NAME,
+                room=room_name,
+                metadata=metadata,
+            )
+        )
+        logger.info("✅ Agent dispatched | dispatch_id=%s", dispatch.id)
+
+        if not LIVEKIT_SIP_TRUNK_ID:
+            raise EnvironmentError("LIVEKIT_SIP_TRUNK_ID is not set in .env.local")
+
+        logger.info("📡 Dialing %s via SIP trunk %s...", sip_call_to, LIVEKIT_SIP_TRUNK_ID)
+        sip_participant = await lkapi.sip.create_sip_participant(
+            lk_api.CreateSIPParticipantRequest(
+                sip_trunk_id=LIVEKIT_SIP_TRUNK_ID,
+                sip_call_to=sip_call_to,
+                room_name=room_name,
+                participant_identity=f"sip-resolution-{user_id}",
+                participant_name=caller_name,
+                wait_until_answered=True,
+            )
+        )
+        logger.info(
+            "✅ Resolution callback initiated | participant=%s | room=%s",
+            sip_participant.participant_identity, room_name,
+        )
+
+        await lkapi.aclose()
+        return {"room_name": room_name, "status": "success", "error": None}
+
+    except Exception as exc:
+        logger.error("❌ Failed to place resolution callback for escalation=%s: %s", escalation_id, exc)
+        return {"room_name": room_name, "status": "error", "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Run: process all pending deadline alerts from DB
 # ---------------------------------------------------------------------------
 async def run_pending_alerts(dry_run: bool = False) -> None:
@@ -388,6 +486,17 @@ def parse_args() -> argparse.Namespace:
             "Example: 'sip:bipraj9@sip.linphone.org' or '+919998887770'"
         ),
     )
+    mode.add_argument(
+        "--resolve-callback",
+        action="store_true",
+        help="Place a resolution notification call for an escalation ticket.",
+    )
+
+    parser.add_argument(
+        "--escalation-id",
+        default="",
+        help="(Used with --resolve-callback) Escalation ticket ID.",
+    )
 
     parser.add_argument(
         "--dry-run",
@@ -419,7 +528,7 @@ async def main() -> None:
 
     logger.info("=" * 60)
     logger.info("🏦 Cyber Suraksha Kendra — Outbound Call Orchestrator")
-    logger.info("   Track: Financial Services | Use Case: Scheme Deadline Alert")
+    logger.info("   Track: Financial Services | Use Case: Scheme Deadline Alert / Escalation Resolution")
     logger.info("   Telephony: LiveKit SIP → Linphone (%s)", LIVEKIT_SIP_TRUNK_ID or "TRUNK NOT SET")
     logger.info("=" * 60)
 
@@ -433,6 +542,26 @@ async def main() -> None:
             deadline=args.deadline,
             dry_run=args.dry_run,
         )
+    elif args.resolve_callback:
+        if not args.escalation_id:
+            logger.error("❌ --escalation-id is required with --resolve-callback")
+            sys.exit(1)
+        record = get_escalation_by_id(args.escalation_id)
+        if not record:
+            logger.error("❌ Escalation ID '%s' not found in database.", args.escalation_id)
+            sys.exit(1)
+        result = await place_resolution_callback(
+            escalation_id=args.escalation_id,
+            user_id=record["user_id"],
+            caller_name=record["caller_name"],
+            sip_uri=record.get("sip_uri", ""),
+            issue_category=record["issue_category"],
+            dry_run=args.dry_run,
+        )
+        logger.info("Resolution callback result: %s", json.dumps(result, indent=2))
+        if result["status"] in ("success", "dry_run"):
+            update_escalation_status(args.escalation_id, "resolved")
+            logger.info("✅ Escalation %s marked as resolved in DB.", args.escalation_id)
     else:
         # Default: process all pending alerts from DB
         await run_pending_alerts(dry_run=args.dry_run)

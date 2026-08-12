@@ -24,12 +24,16 @@ try:
     from db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
     from Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
     from outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
+    from outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
     from schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
+    from escalation import create_escalation as _create_escalation, get_escalation_status as _get_escalation_status
 except ImportError:
     from .db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
     from .Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
     from .outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
+    from .outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
     from .schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
+    from .escalation import create_escalation as _create_escalation, get_escalation_status as _get_escalation_status
 
 
 logger = logging.getLogger("agent")
@@ -206,6 +210,134 @@ class Assistant(Agent):
             logger.error(f"Error marking deadline alert dispatched for {user_id}: {e}")
             return json.dumps({"status": "error", "message": str(e)})
 
+    # -------------------------------------------------------------------------
+    # Escalation Tools
+    # -------------------------------------------------------------------------
+
+    @function_tool
+    async def create_escalation(
+        self,
+        ctx: RunContext,
+        user_id: str,
+        caller_name: str,
+        issue_category: str,
+        issue_summary: str,
+        what_agent_checked: str,
+        urgency: str,
+        caller_consent_given: bool,
+        language: str = "hi-IN",
+        follow_up_method: str = "call",
+        sip_uri: str = "",
+    ) -> str:
+        """Create a human escalation request when the agent cannot resolve the caller's issue alone.
+
+        WHEN TO CALL THIS TOOL:
+        1. The caller reports active fraud (money just moved, unknown transaction, SIM swap happening).
+        2. The caller is in emotional distress and needs a human voice.
+        3. The agent cannot verify or reverse a financial decision.
+        4. The caller explicitly asks to speak to a human.
+        5. The caller needs account-level support only a bank/human can provide.
+
+        BEFORE CALLING: You MUST ask the caller for explicit consent:
+        - Tell them: "मैं एक human agent को यह जानकारी भेजना चाहती हूँ: आपका नाम, समस्या का विवरण, और मैंने क्या check किया। क्या आप इसकी अनुमति देते हैं?"
+        - Only proceed if they say YES. Set caller_consent_given=True.
+
+        PRIVACY RULES — NEVER include in issue_summary or what_agent_checked:
+        - OTPs, PINs, passwords, account numbers, card numbers, Aadhaar/PAN IDs.
+
+        Args:
+            user_id: Caller's unique user ID.
+            caller_name: Full name of the caller.
+            issue_category: Short category label, e.g. 'fraud_active', 'account_blocked', 'scheme_help', 'general_complaint'.
+            issue_summary: 2-3 sentence plain description of the problem. NO sensitive credentials.
+            what_agent_checked: What steps the agent already took or verified (e.g. 'Advised caller to call 1930, confirmed 1930 helpline info, caller says money already transferred').
+            urgency: Urgency level — must be one of: 'low', 'medium', 'high', 'emergency'.
+              - emergency: Money actively being stolen right now / SIM swap happening.
+              - high: Money already lost, caller very distressed.
+              - medium: Suspicious activity, unclear if fraud occurred.
+              - low: Scheme help, document questions, non-urgent follow-up.
+            caller_consent_given: Set to True ONLY if the caller explicitly agreed to share this info.
+            language: Caller's preferred language code (e.g. 'hi-IN', 'en-IN').
+            follow_up_method: How to reach the caller — 'call', 'sms', or 'email'.
+            sip_uri: SIP URI for resolution callback (e.g. 'sip:user@sip.linphone.org'). Leave blank if unknown.
+        """
+        if not caller_consent_given:
+            return json.dumps({
+                "status": "cancelled",
+                "message": "Caller did not give consent. Escalation was NOT created. Please inform the caller and offer alternatives.",
+            })
+
+        try:
+            result = _create_escalation(
+                user_id=user_id,
+                caller_name=caller_name,
+                language=language,
+                follow_up_method=follow_up_method,
+                issue_category=issue_category,
+                issue_summary=issue_summary,
+                what_agent_checked=what_agent_checked,
+                urgency=urgency,
+                sip_uri=sip_uri,
+            )
+            esc_id = result["id"]
+            is_dup = result["is_duplicate"]
+
+            spoken = (
+                f"आपकी request register हो गई है। Reference ID है: {esc_id}। "
+                "एक human agent जल्द ही आपसे संपर्क करेगा। "
+                "इस ID को संभालकर रखें — आप इससे अपनी request का status check कर सकते हैं।"
+            )
+            if is_dup:
+                spoken = (
+                    f"आपकी पहले से एक open request है (ID: {esc_id})। "
+                    "हमने उसे नई जानकारी के साथ update कर दिया है। "
+                    "एक human agent जल्द आपसे संपर्क करेगा।"
+                )
+
+            logger.info(
+                "📋 Escalation %s | user=%s | urgency=%s | duplicate=%s",
+                esc_id, user_id, urgency, is_dup,
+            )
+            return json.dumps({
+                "status": "success",
+                "escalation_id": esc_id,
+                "urgency": urgency,
+                "is_duplicate": is_dup,
+                "spoken_message": spoken,
+            }, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error creating escalation for {user_id}: {e}")
+            return json.dumps({
+                "status": "error",
+                "spoken_message": "माफ़ कीजिए, अभी request register करने में दिक्कत आ रही है। कृपया 1930 पर call करें या थोड़ी देर बाद retry करें।",
+                "message": str(e),
+            }, ensure_ascii=False)
+
+    @function_tool
+    async def check_escalation_status(
+        self,
+        ctx: RunContext,
+        escalation_id: str,
+    ) -> str:
+        """Check the status of an existing human escalation request by its reference ID.
+
+        CALL THIS TOOL WHEN:
+        - A returning caller asks 'What happened to my complaint?' or provides a reference ID.
+
+        Args:
+            escalation_id: The 8-character reference ID given to the caller when the request was created.
+        """
+        try:
+            result = _get_escalation_status(escalation_id)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error checking escalation status for {escalation_id}: {e}")
+            return json.dumps({
+                "status": "error",
+                "spoken_message": f"माफ़ कीजिए, ID {escalation_id} की status check करने में दिक्कत आ रही है। कृपया थोड़ी देर बाद retry करें।",
+                "message": str(e),
+            }, ensure_ascii=False)
+
 
 server = AgentServer()
 
@@ -262,6 +394,29 @@ async def my_agent(ctx: JobContext):
             scheme_name,
             deadline,
         )
+    elif call_metadata.get("call_type") == "escalation_resolved":
+        is_outbound_deadline_alert = True  # treat as outbound so we speak first
+        escalation_id = call_metadata.get("escalation_id", "")
+        caller_name = call_metadata.get("caller_name", "")
+        issue_category = call_metadata.get("issue_category", "")
+        outbound_user_id = call_metadata.get("user_id", "")
+
+        agent_instructions = RESOLUTION_SYSTEM_PROMPT.format(
+            caller_name=caller_name,
+            escalation_id=escalation_id,
+            issue_category=issue_category,
+        )
+        first_greeting = RESOLUTION_FIRST_TURN_GREETING.format(
+            caller_name=caller_name,
+            escalation_id=escalation_id,
+            issue_category=issue_category,
+        )
+        logger.info(
+            "🔔 RESOLUTION CALLBACK call | user=%s | escalation=%s | category=%s",
+            outbound_user_id,
+            escalation_id,
+            issue_category,
+        )
     else:
         # Default: inbound call
         agent_instructions = SYSTEM_PROMPT
@@ -276,7 +431,7 @@ async def my_agent(ctx: JobContext):
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
-            model="gemini-3.6-flash",
+            model="gemini-3.5-flash",
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/

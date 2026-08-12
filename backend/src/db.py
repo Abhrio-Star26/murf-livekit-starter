@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +26,7 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize the SQLite database schema."""
+    """Initialize the SQLite database schema (callers + escalations tables)."""
     conn = get_db_connection(db_path)
     try:
         with conn:
@@ -35,6 +37,24 @@ def init_db(db_path: Optional[str] = None) -> None:
                     language_preference TEXT NOT NULL DEFAULT 'hi-IN',
                     facts TEXT NOT NULL DEFAULT '{}',
                     last_interaction TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS escalations (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    caller_name TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT 'hi-IN',
+                    follow_up_method TEXT NOT NULL DEFAULT 'call',
+                    issue_category TEXT NOT NULL,
+                    issue_summary TEXT NOT NULL,
+                    what_agent_checked TEXT NOT NULL DEFAULT '',
+                    urgency TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    sip_uri TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT
                 )
             """)
     finally:
@@ -216,5 +236,206 @@ def mark_deadline_alert_dispatched(
                 )
             return True
         return False
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# Escalation Support Functions
+# Financial Services Track — Human-in-the-Loop Escalation
+# =============================================================================
+
+# Patterns that must never appear in escalation summaries
+_ESCALATION_PII_PATTERNS = [
+    r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b",  # 16-digit card
+    r"\b\d{12}\b",                                        # Aadhaar
+    r"\b[A-Z]{5}\d{4}[A-Z]\b",                          # PAN
+    r"\b\d{6}\b",                                         # 6-digit OTP / PIN
+    r"\b\d{4}\b",                                         # 4-digit PIN
+    r"(?i)(otp|pin|password|passcode)[\s:=]+\S+",        # labelled credentials
+    r"(?i)account\s*(number|no\.?|num)[\s:=]+\S+",      # labelled account numbers
+    r"(?i)cvv[\s:=]+\d+",                                # CVV
+]
+_PII_REDACTION = "[REDACTED]"
+
+
+def sanitize_escalation_summary(text: str) -> str:
+    """Remove PII (OTP, PIN, card numbers, Aadhaar, PAN, passwords) from an escalation summary."""
+    for pattern in _ESCALATION_PII_PATTERNS:
+        text = re.sub(pattern, _PII_REDACTION, text)
+    return text.strip()
+
+
+def create_or_update_escalation(
+    *,
+    user_id: str,
+    caller_name: str,
+    language: str = "hi-IN",
+    follow_up_method: str = "call",
+    issue_category: str,
+    issue_summary: str,
+    what_agent_checked: str = "",
+    urgency: str = "medium",
+    sip_uri: str = "",
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a new escalation or update an existing open one for the same user + category.
+    Runs PII sanitization on issue_summary and what_agent_checked before saving.
+
+    Returns:
+        dict with keys: id, user_id, status, is_duplicate, created_at, updated_at
+    """
+    init_db(db_path)
+    # Sanitize before persisting
+    clean_summary = sanitize_escalation_summary(issue_summary)
+    clean_checked = sanitize_escalation_summary(what_agent_checked)
+    valid_urgency = urgency if urgency in ("low", "medium", "high", "emergency") else "medium"
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        # Duplicate check: open escalation for same user + category
+        cur.execute(
+            """
+            SELECT id, created_at FROM escalations
+            WHERE user_id = ? AND issue_category = ? AND status IN ('open', 'in_progress')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (user_id, issue_category),
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            # Update the existing ticket instead of creating a duplicate
+            esc_id = existing["id"]
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE escalations
+                    SET issue_summary = ?, what_agent_checked = ?, urgency = ?,
+                        follow_up_method = ?, sip_uri = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (clean_summary, clean_checked, valid_urgency, follow_up_method, sip_uri, now, esc_id),
+                )
+            return {
+                "id": esc_id,
+                "user_id": user_id,
+                "status": "open",
+                "is_duplicate": True,
+                "created_at": existing["created_at"],
+                "updated_at": now,
+            }
+
+        # New escalation
+        esc_id = str(uuid.uuid4())[:8].upper()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO escalations
+                    (id, user_id, caller_name, language, follow_up_method,
+                     issue_category, issue_summary, what_agent_checked,
+                     urgency, status, sip_uri, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                """,
+                (
+                    esc_id, user_id, caller_name, language, follow_up_method,
+                    issue_category, clean_summary, clean_checked,
+                    valid_urgency, sip_uri, now, now,
+                ),
+            )
+        return {
+            "id": esc_id,
+            "user_id": user_id,
+            "status": "open",
+            "is_duplicate": False,
+            "created_at": now,
+            "updated_at": now,
+        }
+    finally:
+        conn.close()
+
+
+def get_escalation_by_id(
+    escalation_id: str,
+    db_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return a single escalation record by ID, or None if not found."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM escalations WHERE id = ?", (escalation_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def list_escalations(
+    status: Optional[str] = None,
+    urgency: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List escalations, optionally filtered by status and/or urgency."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        query = "SELECT * FROM escalations WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if urgency:
+            query += " AND urgency = ?"
+            params.append(urgency)
+        query += " ORDER BY created_at DESC"
+        cur.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_escalation_status(
+    escalation_id: str,
+    new_status: str,
+    db_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update escalation status to 'open', 'in_progress', or 'resolved'.
+    Sets resolved_at when transitioning to 'resolved'.
+
+    Returns updated escalation dict, or None if not found.
+    """
+    valid_statuses = ("open", "in_progress", "resolved")
+    if new_status not in valid_statuses:
+        raise ValueError(f"Invalid status '{new_status}'. Must be one of: {valid_statuses}")
+
+    init_db(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM escalations WHERE id = ?", (escalation_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        resolved_at = now if new_status == "resolved" else row["resolved_at"]
+        with conn:
+            conn.execute(
+                "UPDATE escalations SET status = ?, updated_at = ?, resolved_at = ? WHERE id = ?",
+                (new_status, now, resolved_at, escalation_id),
+            )
+        updated = dict(row)
+        updated["status"] = new_status
+        updated["updated_at"] = now
+        updated["resolved_at"] = resolved_at
+        return updated
     finally:
         conn.close()
