@@ -6,8 +6,9 @@ import { SakhiAvatar, SakhiState } from '@/components/agents-ui/sakhi-avatar';
 import { JanaHeader } from '@/components/agents-ui/jana-header';
 import { TrustDisclaimerFooter } from '@/components/agents-ui/trust-disclaimer-footer';
 import { MicPermissionModal } from '@/components/agents-ui/mic-permission-modal';
+import { TopicDetailModal, TopicCategory } from '@/components/agents-ui/topic-detail-modal';
 import { useLanguage } from '@/components/app/language-context';
-import { Microphone, PhoneCall, ArrowRight, ShieldCheck, Sparkle } from '@phosphor-icons/react';
+import { Microphone, PhoneCall, ArrowRight, ShieldCheck, Sparkle, Bank, PiggyBank } from '@phosphor-icons/react';
 import { cn } from '@/lib/shadcn/utils';
 
 interface WelcomeViewProps {
@@ -27,6 +28,13 @@ export const WelcomeView = ({
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
   const { t } = useLanguage();
   const [showMicError, setShowMicError] = useState(false);
+  const [topicModalOpen, setTopicModalOpen] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<TopicCategory>('schemes');
+
+  const handleOpenTopic = (cat: TopicCategory) => {
+    setSelectedCategory(cat);
+    setTopicModalOpen(true);
+  };
 
   const currentState: SakhiState = isConnecting
     ? 'connecting'
@@ -88,7 +96,7 @@ export const WelcomeView = ({
             <Button
               size="lg"
               onClick={handleStartCallClick}
-              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 via-emerald-600 to-amber-600 hover:from-teal-500 hover:to-amber-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl shadow-teal-950/80 transition-all hover:scale-105 flex items-center justify-center gap-3 border border-amber-300/40"
+              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 via-emerald-600 to-amber-600 hover:from-teal-500 hover:to-amber-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl shadow-teal-950/80 transition-all hover:scale-105 hover:shadow-[0_0_32px_6px_rgba(20,184,166,0.25)] flex items-center justify-center gap-3 border border-amber-300/40"
             >
               <Microphone className="w-5 h-5 text-amber-200 animate-pulse" />
               <span>{t.startCallBtn}</span>
@@ -111,7 +119,7 @@ export const WelcomeView = ({
             <Button
               size="lg"
               onClick={handleStartCallClick}
-              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl transition-all hover:scale-105 flex items-center justify-center gap-3 border border-teal-400/40"
+              className="w-full max-w-sm h-14 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-bold text-sm md:text-base tracking-wide shadow-xl transition-all hover:scale-105 hover:shadow-[0_0_28px_5px_rgba(20,184,166,0.22)] flex items-center justify-center gap-3 border border-teal-400/40"
             >
               <PhoneCall className="w-5 h-5 text-emerald-300" />
               <span>{t.endedBtn}</span>
@@ -120,25 +128,56 @@ export const WelcomeView = ({
         </div>
 
         {/* Topic Cards */}
-        <div className="pt-4 grid grid-cols-2 gap-2 text-[11px] text-slate-300 max-w-md w-full">
-          <div className="p-3 rounded-xl bg-slate-900/80 border border-teal-800/40 text-center space-y-0.5">
-            <span className="text-amber-400 font-semibold flex items-center justify-center gap-1">
-              <Sparkle className="w-3.5 h-3.5" />
+        <div className="pt-4 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[11px] text-slate-300 max-w-xl w-full">
+          <button
+            onClick={() => handleOpenTopic('schemes')}
+            className="p-3 rounded-xl bg-slate-900/90 border border-teal-800/60 hover:border-teal-500 text-center space-y-1 hover:bg-teal-950/40 transition-all hover:scale-[1.03] active:scale-95 cursor-pointer shadow-md group"
+          >
+            <span className="text-amber-400 font-bold flex items-center justify-center gap-1 group-hover:text-amber-300">
+              <Bank className="w-4 h-4 text-amber-400" />
               {t.topicsTitle1}
             </span>
-            <span>{t.topicsDesc1}</span>
-          </div>
-          <div className="p-3 rounded-xl bg-slate-900/80 border border-teal-800/40 text-center space-y-0.5">
-            <span className="text-amber-400 font-semibold flex items-center justify-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="block text-slate-300 text-[10px]">{t.topicsDesc1}</span>
+            <span className="inline-block pt-1 text-[10px] text-teal-400 font-semibold group-hover:underline">View Schemes →</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenTopic('scam')}
+            className="p-3 rounded-xl bg-slate-900/90 border border-teal-800/60 hover:border-red-500/60 text-center space-y-1 hover:bg-red-950/30 transition-all hover:scale-[1.03] active:scale-95 cursor-pointer shadow-md group"
+          >
+            <span className="text-amber-400 font-bold flex items-center justify-center gap-1 group-hover:text-amber-300">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
               {t.topicsTitle2}
             </span>
-            <span>{t.topicsDesc2}</span>
-          </div>
+            <span className="block text-slate-300 text-[10px]">{t.topicsDesc2}</span>
+            <span className="inline-block pt-1 text-[10px] text-red-400 font-semibold group-hover:underline">View Helpline (1930) →</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenTopic('savings')}
+            className="p-3 rounded-xl bg-slate-900/90 border border-teal-800/60 hover:border-amber-500/60 text-center space-y-1 hover:bg-amber-950/30 transition-all hover:scale-[1.03] active:scale-95 cursor-pointer shadow-md group"
+          >
+            <span className="text-amber-400 font-bold flex items-center justify-center gap-1 group-hover:text-amber-300">
+              <PiggyBank className="w-4 h-4 text-amber-300" />
+              {t.topicsTitle3}
+            </span>
+            <span className="block text-slate-300 text-[10px]">{t.topicsDesc3}</span>
+            <span className="inline-block pt-1 text-[10px] text-amber-400 font-semibold group-hover:underline">View Policies →</span>
+          </button>
         </div>
       </main>
 
       <TrustDisclaimerFooter />
+
+      <TopicDetailModal
+        isOpen={topicModalOpen}
+        onClose={() => setTopicModalOpen(false)}
+        initialTopic={selectedCategory}
+        onStartCallWithTopic={() => {
+          setTopicModalOpen(false);
+          handleStartCallClick();
+        }}
+      />
 
       <MicPermissionModal
         isOpen={showMicError}

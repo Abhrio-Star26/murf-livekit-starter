@@ -26,7 +26,7 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize the SQLite database schema (callers + escalations tables)."""
+    """Initialize the SQLite database schema (callers + escalations + call_logs tables)."""
     conn = get_db_connection(db_path)
     try:
         with conn:
@@ -55,6 +55,23 @@ def init_db(db_path: Optional[str] = None) -> None:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     resolved_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS call_logs (
+                    id TEXT PRIMARY KEY,
+                    room_name TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'anonymous',
+                    caller_name TEXT NOT NULL DEFAULT 'Guest Caller',
+                    channel TEXT NOT NULL DEFAULT 'browser',
+                    language TEXT NOT NULL DEFAULT 'hi-IN',
+                    outcome TEXT NOT NULL DEFAULT 'failed',
+                    failure_type TEXT NOT NULL DEFAULT 'incomplete_task',
+                    track_outcome TEXT NOT NULL DEFAULT 'none',
+                    scheme_checked TEXT NOT NULL DEFAULT '',
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
                 )
             """)
     finally:
@@ -439,3 +456,175 @@ def update_escalation_status(
         return updated
     finally:
         conn.close()
+
+
+# =============================================================================
+# Call Analytics Support Functions
+# Financial Services Track — Dashboard & Outcome Tracking
+# =============================================================================
+
+def log_call(
+    *,
+    room_name: str,
+    user_id: str = "anonymous",
+    caller_name: str = "Guest Caller",
+    channel: str = "browser",
+    language: str = "hi-IN",
+    outcome: str = "failed",
+    failure_type: str = "incomplete_task",
+    track_outcome: str = "none",
+    scheme_checked: str = "",
+    latency_ms: int = 0,
+    duration_seconds: int = 0,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record a call outcome in SQLite call_logs table."""
+    init_db(db_path)
+    call_id = str(uuid.uuid4())[:8].upper()
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_db_connection(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO call_logs (
+                    id, room_name, user_id, caller_name, channel, language,
+                    outcome, failure_type, track_outcome, scheme_checked,
+                    latency_ms, duration_seconds, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    call_id, room_name, user_id, caller_name, channel, language,
+                    outcome, failure_type, track_outcome, scheme_checked,
+                    latency_ms, duration_seconds, now
+                ),
+            )
+        return {
+            "id": call_id,
+            "room_name": room_name,
+            "user_id": user_id,
+            "caller_name": caller_name,
+            "channel": channel,
+            "language": language,
+            "outcome": outcome,
+            "failure_type": failure_type,
+            "track_outcome": track_outcome,
+            "scheme_checked": scheme_checked,
+            "latency_ms": latency_ms,
+            "duration_seconds": duration_seconds,
+            "created_at": now,
+        }
+    finally:
+        conn.close()
+
+
+def list_calls(
+    channel: Optional[str] = None,
+    language: Optional[str] = None,
+    outcome: Optional[str] = None,
+    days: Optional[int] = None,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List recent call records with optional filtering."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    try:
+        cur = conn.cursor()
+        query = "SELECT * FROM call_logs WHERE 1=1"
+        params: list = []
+        if channel:
+            query += " AND channel = ?"
+            params.append(channel)
+        if language:
+            query += " AND language = ?"
+            params.append(language)
+        if outcome:
+            query += " AND outcome = ?"
+            params.append(outcome)
+        
+        query += " ORDER BY created_at DESC LIMIT 200"
+        cur.execute(query, params)
+        rows = [dict(row) for row in cur.fetchall()]
+        
+        if days and days > 0:
+            cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
+            rows = [
+                r for r in rows 
+                if datetime.fromisoformat(r["created_at"]).timestamp() >= cutoff
+            ]
+        return rows
+    finally:
+        conn.close()
+
+
+def get_call_analytics(days: Optional[int] = None, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """Calculate aggregated analytics stats for the Call Analytics Dashboard."""
+    calls = list_calls(days=days, db_path=db_path)
+
+    total_calls = len(calls)
+    successful_calls = sum(1 for c in calls if c["outcome"] == "success")
+    failed_calls = sum(1 for c in calls if c["outcome"] == "failed")
+    success_rate = round((successful_calls / total_calls * 100), 1) if total_calls > 0 else 0.0
+
+    # Failure types breakdown
+    failure_types = {
+        "user_declined": 0,
+        "incomplete_task": 0,
+        "tool_failure": 0,
+        "api_error": 0,
+        "no_response": 0,
+        "user_hangup": 0,
+    }
+
+    # Track outcomes breakdown
+    track_outcomes = {
+        "eligibility_check_completed": 0,
+        "document_checklist_received": 0,
+        "escalation_created": 0,
+        "deadline_alert_delivered": 0,
+        "none": 0,
+    }
+
+    # Channels breakdown
+    channels = {"browser": 0, "sip": 0}
+
+    # Latencies
+    latencies = [c["latency_ms"] for c in calls if c["latency_ms"] > 0]
+    avg_latency = round(sum(latencies) / len(latencies), 0) if latencies else 0
+    min_latency = min(latencies) if latencies else 0
+    max_latency = max(latencies) if latencies else 0
+
+    for c in calls:
+        ft = c.get("failure_type", "incomplete_task")
+        if ft in failure_types:
+            failure_types[ft] += 1
+        elif c["outcome"] == "failed":
+            failure_types["incomplete_task"] += 1
+
+        to = c.get("track_outcome", "none")
+        if to in track_outcomes:
+            track_outcomes[to] += 1
+
+        ch = c.get("channel", "browser")
+        if ch in channels:
+            channels[ch] += 1
+        else:
+            channels["browser"] += 1
+
+    return {
+        "total_calls": total_calls,
+        "successful_calls": successful_calls,
+        "failed_calls": failed_calls,
+        "success_rate": success_rate,
+        "latency": {
+            "avg_ms": avg_latency,
+            "min_ms": min_latency,
+            "max_ms": max_latency,
+        },
+        "failure_types": failure_types,
+        "track_outcomes": track_outcomes,
+        "channels": channels,
+        "calls": calls[:50],  # Recent 50 calls for history table
+    }
+

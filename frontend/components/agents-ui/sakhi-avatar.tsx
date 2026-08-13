@@ -48,11 +48,12 @@ export function SakhiAvatar({ state, className, size = 'lg' }: SakhiAvatarProps)
   return (
     <div className={cn('flex flex-col items-center justify-center gap-3', className)}>
       {/* Avatar Container with glowing rings */}
-      <div className="relative">
+      <div className="relative group/avatar">
         {/* Outer Aura Ring */}
         <div
           className={cn(
             'relative overflow-hidden rounded-full border-4 transition-all duration-500 bg-gradient-to-br from-teal-900 via-teal-800 to-slate-900',
+            'group-hover/avatar:shadow-[0_0_28px_4px_rgba(20,184,166,0.22)] group-hover/avatar:ring-teal-400/30',
             sizeClasses[size],
             borderStyles[state]
           )}

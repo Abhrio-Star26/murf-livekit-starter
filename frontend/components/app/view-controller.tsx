@@ -8,6 +8,8 @@ import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
 import { WelcomeView } from '@/components/app/welcome-view';
 
+import { ConnectionState } from 'livekit-client';
+
 const MotionWelcomeView = motion.create(WelcomeView);
 const MotionSessionView = motion.create(AgentSessionView_01);
 
@@ -34,7 +36,10 @@ interface ViewControllerProps {
 }
 
 export function ViewController({ appConfig }: ViewControllerProps) {
-  const { isConnected, isConnecting, start } = useSessionContext();
+  const session = useSessionContext();
+  const isConnected = session.isConnected;
+  const isConnecting = session.connectionState === ConnectionState.Connecting;
+  const start = session.start;
   const { resolvedTheme } = useTheme();
   const [hasHadCall, setHasHadCall] = useState(false);
 

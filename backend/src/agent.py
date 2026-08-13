@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -21,14 +22,14 @@ from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 try:
-    from db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
+    from db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched, log_call
     from Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
     from outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
     from outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
     from schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
     from escalation import create_escalation as _create_escalation, get_escalation_status as _get_escalation_status
 except ImportError:
-    from .db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched
+    from .db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched, log_call
     from .Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
     from .outbound_prompt import OUTBOUND_SYSTEM_PROMPT, OUTBOUND_FIRST_TURN_GREETING
     from .outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
@@ -83,6 +84,9 @@ class Assistant(Agent):
             user_consent_given: Set to True ONLY IF the caller explicitly agreed to saving their information.
         """
         if not user_consent_given:
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state:
+                call_state["failure_type"] = "user_declined"
             return json.dumps({
                 "status": "cancelled",
                 "message": "User consent was not granted. Caller details were NOT saved.",
@@ -94,6 +98,11 @@ class Assistant(Agent):
             language_preference=language_preference,
             facts=facts,
         )
+        call_state = ctx.session.userdata.get("call_state")
+        if call_state:
+            call_state["user_id"] = user_id
+            call_state["caller_name"] = name
+            call_state["language"] = language_preference
         return json.dumps({
             "status": "success",
             "message": f"Caller info for {name} saved successfully.",
@@ -141,9 +150,20 @@ class Assistant(Agent):
                 is_taxpayer=is_taxpayer,
                 girl_child_age=girl_child_age,
             )
+            # Update call analytics outcome
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state and result.get("status") == "success":
+                call_state["outcome"] = "success"
+                call_state["failure_type"] = "none"
+                call_state["track_outcome"] = "eligibility_check_completed"
+                call_state["scheme_checked"] = scheme_id
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error evaluating scheme eligibility for {scheme_id}: {e}")
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state:
+                call_state["outcome"] = "failed"
+                call_state["failure_type"] = "tool_failure"
             # Failure path out loud handling
             return json.dumps({
                 "status": "error",
@@ -169,9 +189,19 @@ class Assistant(Agent):
         """
         try:
             result = get_document_checklist(scheme_id=scheme_id)
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state and result.get("status") == "success":
+                call_state["outcome"] = "success"
+                call_state["failure_type"] = "none"
+                call_state["track_outcome"] = "document_checklist_received"
+                call_state["scheme_checked"] = scheme_id
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error fetching document checklist for {scheme_id}: {e}")
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state:
+                call_state["outcome"] = "failed"
+                call_state["failure_type"] = "tool_failure"
             return json.dumps({
                 "status": "error",
                 "data_as_of": "August 2026",
@@ -197,6 +227,12 @@ class Assistant(Agent):
         """
         try:
             updated = mark_deadline_alert_dispatched(user_id=user_id, scheme_id=scheme_id)
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state and updated:
+                call_state["outcome"] = "success"
+                call_state["failure_type"] = "none"
+                call_state["track_outcome"] = "deadline_alert_delivered"
+                call_state["scheme_checked"] = scheme_id
             if updated:
                 return json.dumps({
                     "status": "success",
@@ -229,39 +265,11 @@ class Assistant(Agent):
         follow_up_method: str = "call",
         sip_uri: str = "",
     ) -> str:
-        """Create a human escalation request when the agent cannot resolve the caller's issue alone.
-
-        WHEN TO CALL THIS TOOL:
-        1. The caller reports active fraud (money just moved, unknown transaction, SIM swap happening).
-        2. The caller is in emotional distress and needs a human voice.
-        3. The agent cannot verify or reverse a financial decision.
-        4. The caller explicitly asks to speak to a human.
-        5. The caller needs account-level support only a bank/human can provide.
-
-        BEFORE CALLING: You MUST ask the caller for explicit consent:
-        - Tell them: "मैं एक human agent को यह जानकारी भेजना चाहती हूँ: आपका नाम, समस्या का विवरण, और मैंने क्या check किया। क्या आप इसकी अनुमति देते हैं?"
-        - Only proceed if they say YES. Set caller_consent_given=True.
-
-        PRIVACY RULES — NEVER include in issue_summary or what_agent_checked:
-        - OTPs, PINs, passwords, account numbers, card numbers, Aadhaar/PAN IDs.
-
-        Args:
-            user_id: Caller's unique user ID.
-            caller_name: Full name of the caller.
-            issue_category: Short category label, e.g. 'fraud_active', 'account_blocked', 'scheme_help', 'general_complaint'.
-            issue_summary: 2-3 sentence plain description of the problem. NO sensitive credentials.
-            what_agent_checked: What steps the agent already took or verified (e.g. 'Advised caller to call 1930, confirmed 1930 helpline info, caller says money already transferred').
-            urgency: Urgency level — must be one of: 'low', 'medium', 'high', 'emergency'.
-              - emergency: Money actively being stolen right now / SIM swap happening.
-              - high: Money already lost, caller very distressed.
-              - medium: Suspicious activity, unclear if fraud occurred.
-              - low: Scheme help, document questions, non-urgent follow-up.
-            caller_consent_given: Set to True ONLY if the caller explicitly agreed to share this info.
-            language: Caller's preferred language code (e.g. 'hi-IN', 'en-IN').
-            follow_up_method: How to reach the caller — 'call', 'sms', or 'email'.
-            sip_uri: SIP URI for resolution callback (e.g. 'sip:user@sip.linphone.org'). Leave blank if unknown.
-        """
+        """Create a human escalation request when the agent cannot resolve the caller's issue alone."""
+        call_state = ctx.session.userdata.get("call_state")
         if not caller_consent_given:
+            if call_state:
+                call_state["failure_type"] = "user_declined"
             return json.dumps({
                 "status": "cancelled",
                 "message": "Caller did not give consent. Escalation was NOT created. Please inform the caller and offer alternatives.",
@@ -281,6 +289,13 @@ class Assistant(Agent):
             )
             esc_id = result["id"]
             is_dup = result["is_duplicate"]
+
+            if call_state:
+                call_state["outcome"] = "success"
+                call_state["failure_type"] = "none"
+                call_state["track_outcome"] = "escalation_created"
+                call_state["user_id"] = user_id
+                call_state["caller_name"] = caller_name
 
             spoken = (
                 f"आपकी request register हो गई है। Reference ID है: {esc_id}। "
@@ -307,6 +322,8 @@ class Assistant(Agent):
             }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error creating escalation for {user_id}: {e}")
+            if call_state:
+                call_state["failure_type"] = "tool_failure"
             return json.dumps({
                 "status": "error",
                 "spoken_message": "माफ़ कीजिए, अभी request register करने में दिक्कत आ रही है। कृपया 1930 पर call करें या थोड़ी देर बाद retry करें।",
@@ -447,6 +464,7 @@ async def my_agent(ctx: JobContext):
         vad=ctx.proc.userdata["vad"],
         # Allow the LLM to generate a response while waiting for the end of turn
         preemptive_generation=True,
+        userdata={},
     )
 
     @session.on("user_input_transcribed")
@@ -498,6 +516,72 @@ async def my_agent(ctx: JobContext):
     # (Anjali initiates — she called them, not the other way around)
     if is_outbound_deadline_alert:
         await session.say(first_greeting, allow_interruptions=True)
+
+    # -------------------------------------------------------------------------
+    # Call Analytics & Latency Tracking
+    # -------------------------------------------------------------------------
+    start_time = datetime.now(timezone.utc)
+    first_stt_time: Optional[datetime] = None
+    first_tts_time: Optional[datetime] = None
+    call_state = {
+        "outcome": "failed",
+        "failure_type": "incomplete_task",
+        "track_outcome": "none",
+        "scheme_checked": "",
+        "user_id": call_metadata.get("user_id", "anonymous"),
+        "caller_name": call_metadata.get("caller_name", "Guest Caller"),
+        "language": "hi-IN",
+        "channel": "sip" if is_outbound_deadline_alert else "browser",
+    }
+
+    # Detect SIP participant channel dynamically
+    for p in ctx.room.remote_participants.values():
+        if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+            call_state["channel"] = "sip"
+
+    # Store state on session for tools to update
+    session.userdata["call_state"] = call_state
+
+    @session.on("user_input_transcribed")
+    def on_stt_transcribed(ev: UserInputTranscribedEvent):
+        nonlocal first_stt_time
+        if first_stt_time is None:
+            first_stt_time = datetime.now(timezone.utc)
+
+    @session.on("agent_speech_started")
+    def on_agent_speech_started(ev: Any):
+        nonlocal first_tts_time
+        if first_tts_time is None:
+            first_tts_time = datetime.now(timezone.utc)
+
+    @session.on("close")
+    def on_session_close(ev: Any = None):
+        end_time = datetime.now(timezone.utc)
+        duration = int((end_time - start_time).total_seconds())
+
+        latency_ms = 0
+        if first_stt_time and first_tts_time and first_tts_time >= first_stt_time:
+            latency_ms = int((first_tts_time - first_stt_time).total_seconds() * 1000)
+
+        # Log call to SQLite
+        try:
+            log_call(
+                room_name=ctx.room.name,
+                user_id=call_state["user_id"],
+                caller_name=call_state["caller_name"],
+                channel=call_state["channel"],
+                language=call_state["language"],
+                outcome=call_state["outcome"],
+                failure_type=call_state["failure_type"],
+                track_outcome=call_state["track_outcome"],
+                scheme_checked=call_state["scheme_checked"],
+                latency_ms=latency_ms,
+                duration_seconds=duration,
+            )
+            logger.info("📊 Logged Call Analytics for room=%s | outcome=%s | track=%s | latency=%dms",
+                        ctx.room.name, call_state["outcome"], call_state["track_outcome"], latency_ms)
+        except Exception as err:
+            logger.error("Failed to log call analytics for room %s: %s", ctx.room.name, err)
 
 
 if __name__ == "__main__":

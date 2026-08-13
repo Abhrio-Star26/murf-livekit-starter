@@ -35,6 +35,9 @@ from db import (
     get_escalation_by_id,
     update_escalation_status,
     create_or_update_escalation,
+    list_calls,
+    get_call_analytics,
+    log_call,
 )
 
 logging.basicConfig(
@@ -163,6 +166,63 @@ def update_status(escalation_id: str, body: StatusUpdateRequest):
             response["callback_status"] = f"error: {exc}"
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Call Analytics Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/analytics")
+def get_analytics_summary(
+    days: str = Query(default=None, description="Days filter: 1 (today), 7, 30, or all")
+):
+    """Retrieve aggregated call analytics metrics for dashboard."""
+    d_val = int(days) if days and days.isdigit() else None
+    return get_call_analytics(days=d_val)
+
+
+@app.get("/calls")
+def get_calls_list(
+    channel: str = Query(default=None),
+    language: str = Query(default=None),
+    outcome: str = Query(default=None),
+    days: str = Query(default=None),
+):
+    """Retrieve list of recorded call logs with optional filtering."""
+    d_val = int(days) if days and days.isdigit() else None
+    return list_calls(channel=channel, language=language, outcome=outcome, days=d_val)
+
+
+class LogCallRequest(BaseModel):
+    room_name: str
+    user_id: str = "anonymous"
+    caller_name: str = "Guest Caller"
+    channel: str = "browser"
+    language: str = "hi-IN"
+    outcome: str = "failed"
+    failure_type: str = "incomplete_task"
+    track_outcome: str = "none"
+    scheme_checked: str = ""
+    latency_ms: int = 0
+    duration_seconds: int = 0
+
+
+@app.post("/calls", status_code=201)
+def record_call_log(body: LogCallRequest):
+    """Explicitly record a call outcome (e.g. from frontend or webhooks)."""
+    return log_call(
+        room_name=body.room_name,
+        user_id=body.user_id,
+        caller_name=body.caller_name,
+        channel=body.channel,
+        language=body.language,
+        outcome=body.outcome,
+        failure_type=body.failure_type,
+        track_outcome=body.track_outcome,
+        scheme_checked=body.scheme_checked,
+        latency_ms=body.latency_ms,
+        duration_seconds=body.duration_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------
