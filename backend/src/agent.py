@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ try:
     from outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
     from schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
     from escalation import create_escalation as _create_escalation, get_escalation_status as _get_escalation_status
+    from specialist_agent import GovernmentSchemeSpecialist, CyberFraudSpecialist
 except ImportError:
     from .db import get_caller, init_db, save_caller, mark_deadline_alert_dispatched, log_call
     from .Prompt import SYSTEM_PROMPT, FIRST_TURN_GREETING
@@ -35,6 +37,7 @@ except ImportError:
     from .outbound_prompt_resolution import RESOLUTION_SYSTEM_PROMPT, RESOLUTION_FIRST_TURN_GREETING
     from .schemes import evaluate_scheme_eligibility, get_document_checklist, get_available_schemes
     from .escalation import create_escalation as _create_escalation, get_escalation_status as _get_escalation_status
+    from .specialist_agent import GovernmentSchemeSpecialist, CyberFraudSpecialist
 
 
 logger = logging.getLogger("agent")
@@ -48,6 +51,109 @@ class Assistant(Agent):
     def __init__(self) -> None:
         init_db()
         super().__init__(instructions=SYSTEM_PROMPT)
+
+    @function_tool
+    async def handoff_to_scheme_specialist(
+        self,
+        ctx: RunContext,
+        query_reason: str,
+        caller_question: Optional[str] = None,
+    ) -> str:
+        """Hand off the current caller and conversation to the Government Scheme Specialist agent.
+
+        MUST CALL THIS TOOL WHEN:
+        1. The user asks questions about Indian government financial schemes (PM-KISAN, PM MUDRA, Atal Pension Yojana, Sukanya Samriddhi, Ayushman Bharat).
+        2. The user wants to check eligibility, required documents, or application procedures for any government financial scheme.
+
+        DO NOT CALL THIS TOOL FOR:
+        - General cyber safety, UPI PIN advice, online fraud helpline (1930) queries, or banking fraud reports.
+
+        Args:
+            query_reason: Summary of why the caller is being transferred to the specialist (e.g. 'Caller asked about PM-Kisan eligibility').
+            caller_question: The specific query or question asked by the caller (optional).
+        """
+        try:
+            specialist = GovernmentSchemeSpecialist()
+            # Retain session context and switch active agent
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state:
+                call_state["transferred_to_specialist"] = True
+                call_state["specialist_reason"] = query_reason
+                call_state["caller_question"] = caller_question or ""
+
+            # Update session's current active agent to GovernmentSchemeSpecialist
+            if hasattr(ctx.session, "update_agent"):
+                res = ctx.session.update_agent(specialist)
+                if inspect.isawaitable(res):
+                    await res
+
+            logger.info("🔀 Handoff initiated to GovernmentSchemeSpecialist (Smita) | reason=%s", query_reason)
+
+            announcement = "मैं आपको हमारे सरकारी योजना विशेषज्ञ (Government Scheme Specialist) से कनेक्ट कर रही हूँ। कृपया एक पल रुकिए।"
+
+            return json.dumps({
+                "status": "handoff_success",
+                "spoken_announcement": announcement,
+                "instruction": "Speak ONLY the spoken_announcement above to the user. Do NOT greet as Smita yourself. The specialist agent will introduce herself in her own voice on the next turn.",
+            }, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error executing handoff to specialist: {e}")
+            return json.dumps({
+                "status": "error",
+                "spoken_failure_message": "माफ़ कीजिए, विशेषज्ञ एजेंट से कनेक्ट करने में कुछ समस्या आई है।",
+                "message": str(e),
+            }, ensure_ascii=False)
+
+    @function_tool
+    async def handoff_to_cyber_fraud_specialist(
+        self,
+        ctx: RunContext,
+        query_reason: str,
+        caller_question: Optional[str] = None,
+    ) -> str:
+        """Hand off the current caller and conversation to the Cyber Fraud Emergency Specialist agent.
+
+        MUST CALL THIS TOOL WHEN:
+        1. The caller reports active financial loss, scam debits, or unauthorized bank transactions.
+        2. The caller reports an urgent cyber fraud emergency, SIM swap, or active account compromise.
+
+        DO NOT CALL THIS TOOL FOR:
+        - Simple general questions like "What is UPI PIN?" or basic security advice without active fraud.
+
+        Args:
+            query_reason: Summary of why the caller is being transferred (e.g. 'Caller lost money to fake buyer QR scam').
+            caller_question: The specific query or incident details provided by the caller (optional).
+        """
+        try:
+            specialist = CyberFraudSpecialist()
+            call_state = ctx.session.userdata.get("call_state")
+            if call_state:
+                call_state["transferred_to_fraud_specialist"] = True
+                call_state["fraud_specialist_reason"] = query_reason
+                call_state["caller_question"] = caller_question or ""
+
+            if hasattr(ctx.session, "update_agent"):
+                res = ctx.session.update_agent(specialist)
+                if inspect.isawaitable(res):
+                    await res
+
+            logger.info("🚨 Handoff initiated to CyberFraudSpecialist (Kriti) | reason=%s", query_reason)
+
+            announcement = "मैं आपको हमारे साइबर फ्रॉड इमरजेंसी विशेषज्ञ (Cyber Fraud Emergency Specialist) से कनेक्ट कर रही हूँ। कृपया एक पल रुकिए।"
+
+            return json.dumps({
+                "status": "handoff_success",
+                "spoken_announcement": announcement,
+                "instruction": "Speak ONLY the spoken_announcement above to the user. Do NOT greet as Kriti yourself. The specialist agent will introduce herself in her own voice on the next turn.",
+            }, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error executing handoff to Cyber Fraud Specialist: {e}")
+            return json.dumps({
+                "status": "error",
+                "spoken_failure_message": "माफ़ कीजिए, फ्रॉड इमरजेंसी विशेषज्ञ से कनेक्ट करने में कुछ समस्या आई है।",
+                "message": str(e),
+            }, ensure_ascii=False)
+
 
     @function_tool
     async def lookup_caller(self, ctx: RunContext, user_id: str) -> str:
@@ -71,7 +177,7 @@ class Assistant(Agent):
         user_id: str,
         name: str,
         language_preference: str,
-        facts: dict,
+        facts: str,
         user_consent_given: bool,
     ) -> str:
         """Save or update caller information in the SQLite database ONLY AFTER the caller gives explicit consent. Do NOT save sensitive financial credentials!
@@ -80,7 +186,7 @@ class Assistant(Agent):
             user_id: Unique user ID of the caller.
             name: Full name of the caller.
             language_preference: Language preference code (e.g. 'hi-IN' or 'en-IN').
-            facts: Non-sensitive caller facts such as schemes_checked, payment_apps_used, fraud_awareness_topic, eligibility_answers. STRICTLY DO NOT include bank account numbers, Aadhaar/PAN IDs, UPI PINs, or OTPs.
+            facts: Non-sensitive caller facts as a JSON string (e.g. '{"scheme_checked": "pm_kisan"}'). STRICTLY DO NOT include bank account numbers, Aadhaar/PAN IDs, UPI PINs, or OTPs.
             user_consent_given: Set to True ONLY IF the caller explicitly agreed to saving their information.
         """
         if not user_consent_given:
@@ -92,11 +198,18 @@ class Assistant(Agent):
                 "message": "User consent was not granted. Caller details were NOT saved.",
             })
 
+        facts_dict = {}
+        if facts:
+            try:
+                facts_dict = json.loads(facts) if isinstance(facts, str) else facts
+            except Exception:
+                facts_dict = {"summary": str(facts)}
+
         saved_record = save_caller(
             user_id=user_id,
             name=name,
             language_preference=language_preference,
-            facts=facts,
+            facts=facts_dict,
         )
         call_state = ctx.session.userdata.get("call_state")
         if call_state:
@@ -448,7 +561,7 @@ async def my_agent(ctx: JobContext):
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
-            model="gemini-3.5-flash",
+            model="gemini-3.6-flash",
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
@@ -467,29 +580,7 @@ async def my_agent(ctx: JobContext):
         userdata={},
     )
 
-    @session.on("user_input_transcribed")
-    def on_user_input_transcribed(ev: UserInputTranscribedEvent):
-        transcript = getattr(ev, "transcript", "")
-        has_devanagari = any("\u0900" <= char <= "\u097F" for char in transcript)
 
-        if has_devanagari:
-            session.tts = murf.TTS(
-                voice="Anisha",
-                locale="hi-IN",
-                style="Conversational",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True,
-            )
-        else:
-            session.tts = murf.TTS(
-                voice="Anisha",
-                locale="en-IN",
-                style="Conversational",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True,
-            )
-
-    # Start the session, which initializes the voice pipeline and warms up the models
     # For outbound calls the agent_instructions are the outbound deadline-alert prompt;
     # for inbound calls they are the regular SYSTEM_PROMPT.
     agent = Assistant()
@@ -541,6 +632,7 @@ async def my_agent(ctx: JobContext):
 
     # Store state on session for tools to update
     session.userdata["call_state"] = call_state
+
 
     @session.on("user_input_transcribed")
     def on_stt_transcribed(ev: UserInputTranscribedEvent):
