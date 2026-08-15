@@ -1,242 +1,143 @@
-# Voice Agent Starter — Powered by Murf Falcon
+# Cyber Suraksha Kendra & Financial Schemes Voice AI Agent
 
-Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on the market - swap the system prompt to build anything from customer support to language tutors.
+A production-grade, real-time Voice AI system for digital safety awareness, government financial scheme eligibility, human escalation, and cyber fraud incident reporting — powered by **Murf Falcon TTS**, **Google Gemini 3.6 Flash**, **Deepgram Nova-3 STT**, and **LiveKit Agents**.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Murf Falcon](https://img.shields.io/badge/TTS-Murf%20Falcon-6366F1)](https://murf.ai/api/docs/text-to-speech/streaming) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-
----
-
-## Why Murf Falcon
-
-- **55ms model latency** - fastest production TTS
-- **130ms time-to-first-audio** across 10+ global regions
-- **$0.01/1000 characters** - up to 10x cheaper than alternatives
-- **150+ voices** across 35+ languages
-- **99.38% pronunciation accuracy**
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Murf Falcon](https://img.shields.io/badge/TTS-Murf%20Falcon-6366F1)](https://murf.ai/api/docs/text-to-speech/streaming) [![Gemini 3.6 Flash](https://img.shields.io/badge/LLM-Gemini%203.6%20Flash-4285F4)](https://deepmind.google/technologies/gemini/) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
 ---
 
-## Financial Services Track: Scheme Eligibility & Document Checklist
+## AI Models & Stack Specifications
 
-The voice agent is equipped with a domain-specific real-data function tool for **Financial Services**:
-
-- **Real Domain Dataset (`schemes_data.json`)**: Curated government financial scheme rules and criteria (PM-KISAN, PM MUDRA Yojana, Atal Pension Yojana, Sukanya Samriddhi Yojana, Ayushman Bharat).
-- **Precise Tool Triggering (Step 3)**: `@function_tool async def check_scheme_eligibility` and `get_scheme_document_checklist` docstrings guide the LLM to call the tool when callers ask about scheme eligibility, income/age limits, or required application documents.
-- **Out-Loud Failure Handling (Step 4)**: On lookup errors, invalid scheme parameters, or missing datasets, the tools return a structured `spoken_failure_message` so the agent speaks a clear, helpful status update rather than hallucinating or remaining silent.
-- **Data Recency Metadata (Step 5)**: All responses return `"data_as_of": "August 2026"` and official source references. The agent explicitly states data currency in spoken turns ("यह मानदंड अगस्त 2026 के अनुसार हैं").
+| Component | Model / Provider | Configuration / Voice ID | Purpose |
+| :--- | :--- | :--- | :--- |
+| **LLM (Brain)** | **Google Gemini 3.6 Flash** | `gemini-3.6-flash` | Reasoning, caller turn management, tool routing & multi-agent handoffs |
+| **TTS (Voice)** | **Murf Falcon** | Primary: `Anisha` (Hindi/Hinglish Female)<br>Scheme Specialist: `Kriti`<br>Fraud Specialist: `Smita` / `Pooja` | High-speed, streaming text-to-speech with natural conversational prosody |
+| **STT (Ears)** | **Deepgram Nova-3** | `model="nova-3"`, `language="multi"` | Real-time speech recognition tuned for Indian English & Hindi |
+| **Turn Detection**| **LiveKit Multilingual VAD** | `MultilingualModel` + `BVCTelephony` / `BVC` | Voice activity detection & barge-in interruption handling |
+| **Real-time Transport**| **LiveKit Cloud / Local Server**| WebSockets & WebRTC | Ultra-low latency bidrectional audio streaming |
 
 ---
 
-## Architecture
+## Agent & Specialist Personas
+
+1. **Primary Agent: Anjali Arora (अंजलि अरोड़ा)**
+   - **Role**: Digital Safety Expert & Financial Literacy Advisor at *Cyber Suraksha Kendra*.
+   - **Voice**: Murf Falcon (`Anisha`, female voice).
+   - **Responsibilities**: Welcomes callers, handles digital payment safety queries, looks up returning callers in SQLite database (`db.py`), asks consent before saving user memory, and routes requests to specialist agents.
+
+2. **Government Scheme Specialist: Kriti (कृति)**
+   - **Role**: Government Financial Schemes & Eligibility Specialist.
+   - **Voice**: Murf Falcon (`Kriti`, female voice).
+   - **Responsibilities**: Evaluates eligibility and required document checklists for Indian government schemes: **PM-KISAN**, **PM MUDRA Yojana**, **Atal Pension Yojana**, **Sukanya Samriddhi Yojana**, and **Ayushman Bharat**.
+
+3. **Cyber Fraud Emergency Specialist: Smita (स्मिता)**
+   - **Role**: Cyber Crime & Incident Response Specialist.
+   - **Voice**: Murf Falcon (`Smita`, female voice).
+   - **Responsibilities**: Guides victims of financial fraud, logs incident reports without sensitive credentials (PINs/OTPs), and provides immediate emergency escalation guidance for the National Cyber Crime Helpline (**1930**).
+
+---
+
+## Architecture Overview
 
 ```mermaid
-flowchart LR
-    A[🎙️ User speaks] -->|audio| B[Deepgram STT]
-    B -->|text| C[LLM]
-    C -->|response text| D[Murf Falcon TTS]
-    D -->|audio| E[LiveKit]
-    E -->|stream| F[🔊 User hears]
+flowchart TD
+    subgraph Client Layer
+        A[🎙️ User Audio / Browser UI] <-->|WebRTC Stream| B[LiveKit Server]
+        P[📱 Phone User / SIP Trunk] <-->|SIP Audio| B
+    end
 
-    style A fill:#444441,stroke:#888780,color:#fff
-    style B fill:#185FA5,stroke:#85B7EB,color:#fff
-    style C fill:#534AB7,stroke:#AFA9EC,color:#fff
-    style D fill:#0F6E56,stroke:#5DCAA5,color:#fff
-    style E fill:#D85A30,stroke:#F0997B,color:#fff
-    style F fill:#444441,stroke:#888780,color:#fff
+    subgraph Voice Pipeline
+        B -->|Audio Input| C[Deepgram Nova-3 STT]
+        C -->|Transcribed Text| D[Google Gemini 3.6 Flash LLM]
+        D -->|Response Text| E[Murf Falcon TTS]
+        E -->|Streaming Audio| B
+    end
+
+    subgraph Multi-Agent & Backend Tools
+        D -->|Handoff| F[Specialist: Kriti - Government Schemes]
+        D -->|Handoff| G[Specialist: Smita - Cyber Fraud]
+        D -->|Execute Tool| H[(schemes_data.json / db.py)]
+        D -->|Escalation Request| I[Escalation REST API / Human Dashboard]
+    end
 ```
 
 ---
 
-## Quickstart
+## Key Features
+
+- **Financial Scheme Eligibility Lookup (`schemes.py`)**: Real-time evaluation of eligibility criteria and document requirements for top 5 Indian financial schemes.
+- **Out-Loud Tool Failure Recovery**: When datasets or servers fail, tools return a structured `spoken_failure_message` so the agent speaks a natural status update instead of hallucinating or crashing.
+- **Caller Memory & Database (`db.py`)**: Persists caller history in SQLite with explicit consent safeguards (never stores sensitive keys like PINs, Passwords, or OTPs).
+- **Outbound SIP Deadline Alerts (`outbound_call.py`)**: Initiates automated outbound calls to remind users of scheme application deadlines.
+- **Human Escalation (`escalation_api.py`)**: REST endpoints to log, view, and assign human supervisor intervention requests.
+- **Call Analytics Dashboard**: Frontend and backend integration tracking turn latencies, completion outcomes, and channel stats.
+
+---
+
+## How to Run the Project (Step-by-Step)
 
 ### Prerequisites
 
-- **Python** 3.10+
-- **[uv](https://docs.astral.sh/uv/)** - fast Python package manager
-  ```bash
-  # macOS/Linux
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # Windows (PowerShell)
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-- **Node.js** 18+
-- **pnpm** — fast Node package manager
-  ```bash
-  npm install -g pnpm
-  ```
-- A [LiveKit](https://cloud.livekit.io/) project (free tier available)
+- **Python** 3.10+ with **[uv](https://docs.astral.sh/uv/)** installed
+- **Node.js** 18+ with **pnpm** installed (`npm install -g pnpm`)
+- **LiveKit Server** CLI (`livekit-server --dev`)
 
-### Step 1: Clone the repo
+---
 
-```bash
-git clone https://github.com/murf-ai/murf-livekit-starter.git
-cd murf-livekit-starter
+### Step 1: Environment Setup
+
+Create `.env.local` in both `backend/` and `frontend/` folders:
+
+```env
+# LiveKit Credentials
+LIVEKIT_URL=wss://your-livekit-domain.livekit.cloud
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+
+# AI Models API Keys
+GOOGLE_API_KEY=your_gemini_api_key
+MURF_API_KEY=your_murf_api_key
+DEEPGRAM_API_KEY=your_deepgram_api_key
 ```
 
-### Step 2: Set up environment variables
+---
 
-Create `.env.local` in both `backend/` and `frontend/` (copy from `.env.example` in each). You need:
+### Step 2: Start the Services
 
-| Variable                               | Where to get it                                        | Required |
-| -------------------------------------- | ------------------------------------------------------ | -------- |
-| `LIVEKIT_URL`                          | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_KEY`                      | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_SECRET`                   | LiveKit Cloud dashboard                                | Yes      |
-| `MURF_API_KEY`                         | [murf.ai/api/dashboard](https://murf.ai/api/dashboard) | Yes      |
-| `DEEPGRAM_API_KEY`                     | [deepgram.com](https://deepgram.com)                   | Yes      |
-| `GOOGLE_API_KEY` (or `OPENAI_API_KEY`) | Depends on LLM choice                                  | Yes      |
+Run each component in a separate terminal:
 
-### Step 3: Install backend dependencies
+#### Terminal 1 — LiveKit Server
+```bash
+livekit-server --dev
+```
 
+#### Terminal 2 — Escalation & Call Analytics REST API
+```bash
+cd backend
+uv run python src/escalation_api.py
+```
+*(Runs REST server on `http://localhost:5000`)*
+
+#### Terminal 3 — Backend Voice Agent Workers (Anjali + Specialists)
 ```bash
 cd backend
 uv sync
-uv run python src/agent.py download-files
+uv run python src/agent.py dev
 ```
 
-### Step 4: Install frontend dependencies
-
+#### Terminal 4 — Next.js Frontend & Analytics Dashboard
 ```bash
 cd frontend
 pnpm install
+pnpm dev
 ```
+*(Open **http://localhost:3000** in your browser)*
 
-### Step 5: Run it
-
-**Option A - All-in-one (from repo root):**
-
+#### Terminal 5 (Optional) — Trigger Outbound Phone Call
 ```bash
-# macOS/Linux
-chmod +x start_app.sh
-./start_app.sh
-
-# Windows (PowerShell)
-.\start_app.ps1
+cd backend
+uv run python src/outbound_call.py
 ```
-
-**Option B - Separate terminals:**
-
-```bash
-# Terminal 1 — LiveKit Server
-livekit-server --dev
-
-# Terminal 2 — Backend agent
-cd backend && uv run python src/agent.py dev
-
-# Terminal 3 — Frontend
-cd frontend && pnpm dev
-```
-
-Then open **http://localhost:3000** in your browser.
-
-You should now see the voice agent UI. Click **Start talking**, allow microphone access, and speak — the agent will respond with Murf Falcon TTS. Ensure your backend and (if using Option B) LiveKit server are running.
-
----
-
-## Deploy
-
-Want to deploy this beyond localhost? You'll need to deploy **two services**: the backend agent and the frontend. Both must use the same LiveKit project.
-
-> This is a two-service app — the backend agent and the frontend UI deploy separately. You'll need both running and connected to the same LiveKit project.
-
-### Backend (Python agent) — Deploy to Railway
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tIVCF1?referralCode=cNjn2P&utm_medium=integration&utm_source=template&utm_campaign=generic)
-
-Set these environment variables in Railway:
-
-- `MURF_API_KEY`
-- `DEEPGRAM_API_KEY`
-- `GOOGLE_API_KEY` or `OPENAI_API_KEY`
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-
-The backend runs as a long-lived Python process that connects to LiveKit as an agent. Railway handles this well.
-
-### Frontend (Next.js) — Deploy to Vercel
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/murf-ai/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
-
-Set these environment variables in Vercel:
-
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `AGENT_NAME` (optional — for explicit agent dispatch)
-
-The frontend is a standard Next.js app. Point it at the same LiveKit instance your backend agent is connected to.
-
-### Connecting them
-
-The frontend and backend don't call each other directly — they both connect to **LiveKit**, which handles the real-time audio transport.
-
-1. Use the **same** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` on both Railway and Vercel
-2. Set `AGENT_NAME=my-agent` on Vercel — this matches the `agent_name="my-agent"` registered in `backend/src/agent.py`
-3. Verify: Railway logs should show the agent connected to LiveKit. Open your Vercel URL, click **Start talking** — the agent should respond
-
-If the agent doesn't connect, double-check that both services point to the same LiveKit project and that the backend is running (check Railway logs).
-
----
-
-## Change the Use Case
-
-The default system prompt makes this a **customer support agent**. You can change the agent’s behavior by editing the prompt.
-
-**Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
-
-### Example prompts (copy-paste)
-
-**Customer Support (default):**
-
-```
-You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate.
-```
-
-**Language Tutor:**
-
-```
-You are a patient and encouraging language tutor helping the user practice conversational Spanish. Speak primarily in Spanish but switch to English to explain grammar or vocabulary when needed. Correct mistakes gently and suggest better phrasing. Keep conversations natural and fun.
-```
-
-**AI Receptionist:**
-
-```
-You are a professional receptionist for a medical clinic. Help callers schedule appointments, answer questions about office hours and services, and take messages for doctors. Be warm but efficient. Ask for the caller's name and reason for calling upfront.
-```
-
-See the Configuration section below for voice, STT, and LLM options.
-
----
-
-## Configuration
-
-### Murf voice
-
-Edit the `tts=murf.TTS(...)` call in `backend/src/agent.py`. Set the `voice` argument to any Murf voice ID. Examples:
-
-- `Anisha` — Indian English (female, default in this starter)
-- `Pooja` — Indian English (female)
-- `Samar` — Indian English (male)
-- `Amara` — US English (female)
-- `Gordon` — US English (male)
-- `Hazel` — UK English (female)
-- `Bertie` — UK English (male)
-
-Browse all voices: [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library).
-
-### STT provider
-
-STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call. The default is Deepgram (`deepgram.STT(model="nova-3")`). You can swap to another LiveKit-compatible STT plugin if needed.
-
-### LLM (Gemini vs OpenAI)
-
-- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-3.5-flash-lite")` in `agent.py`.
-- **OpenAI:** Set `OPENAI_API_KEY`, add the OpenAI plugin, and use the corresponding `llm=openai.LLM(...)` in `agent.py`.
-
-### Audio format
-
-Murf Falcon and LiveKit handle audio format internally. For advanced options, see [Murf API docs](https://murf.ai/api/docs) and [LiveKit docs](https://docs.livekit.io).
 
 ---
 
@@ -244,46 +145,30 @@ Murf Falcon and LiveKit handle audio format internally. For advanced options, se
 
 ```
 murf-livekit-starter/
-├── backend/                 # Python voice agent (LiveKit Agents + Murf Falcon)
+├── backend/                         # Python Agent Service
 │   ├── src/
-│   │   └── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
-│   ├── tests/               # Agent tests
-│   ├── .env.example         # Backend env template
-│   ├── pyproject.toml       # Python deps (uv)
-│   └── railway.toml         # Railway deploy config
-├── frontend/                # Next.js UI for voice sessions
-│   ├── app/
-│   │   ├── page.tsx         # Main page
-│   │   └── api/token/       # LiveKit token endpoint (dev)
-│   ├── components/          # UI (agents-ui, app config, theme)
-│   ├── app-config.ts        # Branding, title, button text, accent
-│   ├── .env.example         # Frontend env template
-│   └── package.json         # Node deps (pnpm)
-├── start_app.sh             # Start LiveKit + backend + frontend (macOS/Linux)
-├── start_app.ps1            # Start LiveKit + backend + frontend (Windows)
-├── README.md                # This file
+│   │   ├── agent.py                 # Primary entrypoint (Anjali Arora), Gemini 3.6 Flash & Murf Falcon setup
+│   │   ├── Prompt.py                # System prompts for Anjali, Kriti, and Smita
+│   │   ├── specialist_agent.py      # Government Schemes (Kriti) & Cyber Fraud (Smita) Specialist agents
+│   │   ├── schemes.py               # Scheme evaluation and document checklist tool logic
+│   │   ├── schemes_data.json        # Scheme criteria dataset
+│   │   ├── db.py                    # SQLite caller database & call analytics logging
+│   │   ├── escalation.py            # Human escalation logic
+│   │   ├── escalation_api.py        # Flask/FastAPI REST API for human support UI
+│   │   └── outbound_call.py         # Outbound SIP call dispatch script
+│   └── pyproject.toml               # Python dependencies managed by uv
+├── frontend/                        # Next.js 14 Web Application
+│   ├── app/                         # App router, pages, and API endpoints
+│   ├── components/                  # LiveKit room components & call analytics dashboard UI
+│   └── package.json                 # Node dependencies (pnpm)
+├── start_app.ps1                    # PowerShell convenience launch script (Windows)
+├── start_app.sh                     # Bash convenience launch script (macOS/Linux)
+└── README.md                        # Documentation
 ```
-
-For deeper documentation on each part, see:
-
-- [Backend Documentation](./backend/README.md) — agent pipeline, voice/LLM/STT configuration, testing, deployment
-- [Frontend Documentation](./frontend/README.md) — UI customization, visualizers, theming, component architecture
-
----
-
-## Links
-
-- [Murf API Docs](https://murf.ai/api/docs)
-- [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library)
-- [LiveKit Docs](https://docs.livekit.io)
-- [Deepgram Docs](https://developers.deepgram.com)
-- [Murf Falcon Benchmarks](https://murf.ai/falcon/benchmarks)
-- [TTS Latency Benchmarker](https://github.com/sahilsgupta/tts-latency-benchmarker) — run your own p50/p95 tests across providers
-- [Murf Discord](https://discord.gg/FbKAy96Sz7)
-- [Murf Startup Incubator](https://murf.ai/api) — 50M free characters for startups
 
 ---
 
 ## License
 
-MIT
+MIT License
+
